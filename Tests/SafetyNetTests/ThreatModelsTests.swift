@@ -65,7 +65,7 @@ final class ThreatModelsTests: XCTestCase {
 
     func testThreatEventDefaultTimestampIsRecent() {
         let before = Date()
-        let event = ThreatEvent(level: .none, reasons: [])
+        let event = ThreatEvent(level: ThreatLevel.none, reasons: [])
         let after = Date()
         XCTAssertTrue(event.timestamp >= before && event.timestamp <= after)
     }
@@ -77,7 +77,19 @@ final class ThreatModelsTests: XCTestCase {
     }
 
     func testThreatEventEmptyReasonsAllowed() {
-        let event = ThreatEvent(level: .none, reasons: [])
+        let event = ThreatEvent(level: ThreatLevel.none, reasons: [])
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
+    func testThreatEventLevelCanBeNilForPartialChecks() {
+        let event = ThreatEvent(level: nil, reasons: [.debuggerAttached])
+        XCTAssertNil(event.level)
+        XCTAssertEqual(event.reasons, [.debuggerAttached])
+    }
+
+    func testThreatEventLevelNilWithEmptyReasonsAllowed() {
+        let event = ThreatEvent(level: nil, reasons: [])
+        XCTAssertNil(event.level)
         XCTAssertTrue(event.reasons.isEmpty)
     }
 }

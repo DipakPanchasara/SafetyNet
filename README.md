@@ -87,19 +87,29 @@ Call this from `application(_:didFinishLaunchingWithOptions:)` in your
 
 ```swift
 Task {
-    let event = await SafetyNet.shared.check()
-    switch event.level {
-    case .none:
-        break // clean device — proceed normally
-    case .medium:
-        // log only — do not change UI (avoids tipping off an attacker)
-        break
-    case .high:
-        // your app decides: e.g. disable sensitive features
-        disableSensitiveFeatures()
-    case .critical:
-        // your app decides: e.g. force logout, wipe local session
-        forceLogoutAndClearSession()
+    let event = await SafetyNet.shared.check() // defaults to SafetyNetChecks.all
+    if let level = event.level {
+        switch level {
+        case .none:
+            break // clean device — proceed normally
+        case .medium:
+            // log only — do not change UI (avoids tipping off an attacker)
+            break
+        case .high:
+            // your app decides: e.g. disable sensitive features
+            disableSensitiveFeatures()
+        case .critical:
+            // your app decides: e.g. force logout, wipe local session
+            forceLogoutAndClearSession()
+        }
+    } else {
+        // Only reached if you passed a non-default `checks:` selection to
+        // check() — see "Selecting which checks run" below. No aggregate
+        // severity is computed for partial runs; inspect event.reasons
+        // yourself and decide what "positive" means for your use case.
+        if !event.reasons.isEmpty {
+            handlePartialCheckReasons(event.reasons)
+        }
     }
 }
 ```
@@ -111,24 +121,32 @@ matters.
 ### Step 4 — (Optional) Start continuous background monitoring
 
 `startMonitoring` takes a plain closure callback — not a `NotificationCenter`
-notification — that you register once and that fires on every re-check where
-the threat level is `.medium` or above:
+notification — that you register once. With the default `checks: .all`,
+`onThreat` fires on every re-check where the aggregate `level` is `.medium`
+or above. If you pass a partial `checks:` selection instead (see "Selecting
+which checks run" below), `level` is always `nil`, so `onThreat` fires
+whenever any selected signal fired positive (`reasons` is non-empty):
 
 ```swift
 // e.g. call this after login, once the user has an active session
 SafetyNet.shared.startMonitoring { event in
-    // Called on a background queue on a randomised interval (30-120s),
-    // only when level >= .medium. Hop to main thread before touching UI.
+    // Called on a background queue on a randomised interval (30-120s).
+    // Hop to main thread before touching UI.
     DispatchQueue.main.async {
-        switch event.level {
-        case .none:
-            break // won't actually be called for .none
-        case .medium:
-            break // log only — do not change UI
-        case .high:
-            disableSensitiveFeatures()
-        case .critical:
-            forceLogoutAndClearSession()
+        if let level = event.level {
+            switch level {
+            case .none:
+                break // won't actually be called for .none
+            case .medium:
+                break // log only — do not change UI
+            case .high:
+                disableSensitiveFeatures()
+            case .critical:
+                forceLogoutAndClearSession()
+            }
+        } else {
+            // Only reached with a partial `checks:` selection.
+            handlePartialCheckReasons(event.reasons)
         }
     }
 }
@@ -185,6 +203,7 @@ test on:
 | FR-3 | Don't call SafetyNet APIs from a `@MainActor`-isolated context expecting synchronous results — `check()` is `async`. |
 | FR-4 | Keychain keys used via `store(secret:forKey:)` are scoped to SafetyNet's internal service identifier and cannot collide with your app's own Keychain usage. |
 | FR-5 | Pair `startMonitoring` with `stopMonitoring` to avoid an orphaned background timer outliving its use case (e.g. after logout). |
+| FR-6 | If you pass a non-default `checks:` to `check()`/`startMonitoring()`, handle `event.level == nil` explicitly — do not force-unwrap `event.level`. |
 
 ### Known environment constraint — Keychain in test targets
 
@@ -228,14 +247,15 @@ above).
 ## Architecture
 
 **SafetyNet never auto-reacts.** It only computes and returns a `ThreatEvent`
-(`level` + `reasons`) — it never disables UI, force-logs-out, posts
-`NotificationCenter` notifications, or kills the process on its own. This is
-a deliberate constraint: an earlier design that auto-reacted on HIGH/CRITICAL
-threat caused a production incident where a consuming app's login screen
-silently hung, because the auto-posted notification triggered the host app
-to disable its own UI in a way that was very difficult to diagnose. When
-adding new checks, preserve this "report only" contract; do not reintroduce
-automatic side effects.
+(`level` + `reasons`, where `level` is `nil` for partial check selections —
+see "Selecting which checks run" below) — it never disables UI, force-logs-out,
+posts `NotificationCenter` notifications, or kills the process on its own.
+This is a deliberate constraint: an earlier design that auto-reacted on
+HIGH/CRITICAL threat caused a production incident where a consuming app's
+login screen silently hung, because the auto-posted notification triggered
+the host app to disable its own UI in a way that was very difficult to
+diagnose. When adding new checks, preserve this "report only" contract; do
+not reintroduce automatic side effects.
 
 ### Call chain
 
@@ -247,6 +267,40 @@ SafetyNet (public singleton API, Sources/SafetyNet/SafetyNet.swift)
        -> IntegrityValidator.validateCodeSignature()
   -> SecureKeychain (independent — not part of the scoring pipeline)
 ```
+
+### Selecting which checks run
+
+`check()`/`startMonitoring()` accept a `checks: SafetyNetChecks = .all`
+parameter — an `OptionSet` covering all 10 individually-scored signals, with
+`.jailbreak`/`.debugger`/`.integrity` convenience group unions and `.all`
+(the default) covering every signal.
+
+- **`.all` (default)** — reproduces the original behavior exactly: every
+  signal runs, and `ThreatEvent.level` is populated via the scored
+  thresholds described above.
+- **Any partial selection** (e.g. `.debugger`, `[.fridaPort, .shadowTweak]`,
+  or a single signal) — `ThreatEvent.level` is always `nil`. The medium/high/
+  critical thresholds were calibrated assuming all 10 signals could
+  contribute, deliberately so no single signal can reach `.critical` alone;
+  a caller-chosen subset could otherwise reach `.critical` off far fewer
+  independent signals than intended. Rather than silently weaken that
+  guarantee, SafetyNet declines to compute a severity for partial runs —
+  `event.reasons` still reports exactly which of the *selected* checks fired
+  positive, and your app decides what that combination means.
+
+```swift
+// Full assessment (default) — level is populated
+let full = await SafetyNet.shared.check()
+
+// Partial — level is always nil; inspect reasons yourself
+let partial = await SafetyNet.shared.check(checks: [.fridaPort, .debuggerAttached])
+```
+
+Note: `JailbreakDetector.detect()` is monolithic — it always runs all 7 of
+its internal jailbreak checks in one pass. Selecting even a single jailbreak
+sub-signal (e.g. just `.fridaPort`) still costs the same as running all 7;
+only the *reported* subset in `reasons` is filtered down to what you asked
+for.
 
 `SecurityOrchestrator` is an `actor` and is the only place scoring happens.
 `runChecks()` sums per-signal scores into a `ThreatLevel` via thresholds

@@ -18,16 +18,27 @@ public final class SafetyNet {
         DebuggerDetector.installAntiDebugAtLaunch()
     }
 
-    /// Runs all checks once and returns the current threat assessment.
-    public func check() async -> ThreatEvent {
-        await SecurityOrchestrator.shared.runChecks()
+    /// Runs the selected `checks` once and returns the current threat
+    /// assessment. Defaults to `.all`, matching the original behavior
+    /// exactly (zero-argument call sites keep compiling and behaving
+    /// identically).
+    ///
+    /// When `checks` is a partial subset, `event.level` is `nil` — see
+    /// `ThreatEvent.level` and `SafetyNetChecks` for why.
+    public func check(checks: SafetyNetChecks = .all) async -> ThreatEvent {
+        await SecurityOrchestrator.shared.runChecks(checks: checks)
     }
 
-    /// Starts periodic background re-checks (randomised interval 30-120s).
-    /// `onThreat` is only invoked when the level is `.medium` or above.
-    /// No-op in Debug builds.
-    public func startMonitoring(onThreat: @escaping @Sendable (ThreatEvent) -> Void) {
-        Task { await SecurityOrchestrator.shared.startMonitoring(onThreat: onThreat) }
+    /// Starts periodic background re-checks (randomised interval 30-120s)
+    /// using the selected `checks`. No-op in Debug builds.
+    ///
+    /// `onThreat` fires when `level >= .medium` (full `checks`), or when
+    /// `level == nil && reasons` is non-empty (partial `checks`).
+    public func startMonitoring(
+        checks: SafetyNetChecks = .all,
+        onThreat: @escaping @Sendable (ThreatEvent) -> Void
+    ) {
+        Task { await SecurityOrchestrator.shared.startMonitoring(checks: checks, onThreat: onThreat) }
     }
 
     public func stopMonitoring() {

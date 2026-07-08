@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'SafetyNet'
-  s.version          = '1.0.0'
+  s.version          = '2.0.0'
   s.summary          = 'Jailbreak detection, anti-debugging, integrity validation, and secure Keychain storage for iOS — reports threats without auto-reacting.'
   s.homepage         = 'https://github.com/DipakPanchasara/SafetyNet'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }

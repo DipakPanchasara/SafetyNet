@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'SafetyNetObjC'
-  s.version          = '1.0.0'
+  s.version          = '2.0.0'
   s.summary          = 'Objective-C bridge target for the SafetyNet pod. Not intended for standalone use.'
   s.homepage         = 'https://github.com/DipakPanchasara/SafetyNet'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }

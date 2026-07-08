@@ -15,7 +15,7 @@ final class SafetyNetTests: XCTestCase {
         // and the test binary also runs on the Simulator where the
         // underlying detectors are guarded independently.
         let event = await SafetyNet.shared.check()
-        XCTAssertEqual(event.level, .none)
+        XCTAssertEqual(event.level, ThreatLevel.none)
         XCTAssertTrue(event.reasons.isEmpty)
     }
 
@@ -29,10 +29,55 @@ final class SafetyNetTests: XCTestCase {
         XCTAssertTrue(SafetyNet.shared === SafetyNet.shared)
     }
 
+    // MARK: - check(checks:)
+
+    func testCheckWithAllChecksReturnsNonNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: .all)
+        XCTAssertNotNil(event.level)
+        XCTAssertEqual(event.level, ThreatLevel.none)
+    }
+
+    func testCheckDefaultParameterMatchesExplicitAll() async {
+        // check() with no args must remain behaviorally identical to
+        // check(checks: .all) — the zero-argument compatibility guarantee
+        // for existing call sites.
+        let implicit = await SafetyNet.shared.check()
+        let explicit = await SafetyNet.shared.check(checks: .all)
+        XCTAssertEqual(implicit.level, explicit.level)
+    }
+
+    func testCheckWithPartialJailbreakSubsetReturnsNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: [.jailbreakFilesystem, .fridaPort])
+        XCTAssertNil(event.level)
+        // Debug/Simulator short-circuits every detector to a clean result,
+        // so reasons must be empty here — this exercises the nil-level
+        // plumbing for a partial run, not real positive detection (which
+        // requires a physical, non-Debug device).
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
+    func testCheckWithPartialDebuggerOnlyReturnsNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: .debugger)
+        XCTAssertNil(event.level)
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
+    func testCheckWithSingleIntegrityCheckReturnsNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: [.codeSignatureInvalid])
+        XCTAssertNil(event.level)
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
     // MARK: - Monitoring lifecycle
 
     func testStartMonitoringDoesNotCrash() {
         SafetyNet.shared.startMonitoring { _ in
+            XCTFail("onThreat should not fire in a Debug/Simulator test run")
+        }
+    }
+
+    func testStartMonitoringWithPartialChecksDoesNotCrash() {
+        SafetyNet.shared.startMonitoring(checks: [.debuggerAttached]) { _ in
             XCTFail("onThreat should not fire in a Debug/Simulator test run")
         }
     }

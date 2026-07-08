@@ -12,29 +12,75 @@ actor SecurityOrchestrator {
 
     // MARK: - Score all checks
 
-    func runChecks() async -> ThreatEvent {
+    /// Runs the selected `checks` and returns a `ThreatEvent`.
+    ///
+    /// When `checks == .all` (the default), this reproduces the original
+    /// behavior exactly: every one of the 10 signals runs, scores sum into
+    /// an aggregate `ThreatLevel`, and `event.level` is non-nil.
+    ///
+    /// When `checks` is a partial subset, `event.level` is always `nil` —
+    /// the medium/high/critical thresholds below assume all 10 signals
+    /// could contribute, and were deliberately calibrated so no single
+    /// check can reach `.critical` alone; a caller-chosen subset could
+    /// otherwise reach `.critical` off far fewer independent signals than
+    /// intended. Partial runs report only which of the *selected* checks
+    /// fired via `event.reasons`, leaving severity judgment to the caller.
+    func runChecks(checks: SafetyNetChecks = .all) async -> ThreatEvent {
         #if DEBUG
         // Never run real checks in Debug — debugger attachment and dev code
         // signing produce false-positive HIGH scores that would disable
         // sensitive features or trigger lockdown during development.
-        return ThreatEvent(level: .none, reasons: [])
+        return ThreatEvent(level: checks == .all ? ThreatLevel.none : nil, reasons: [])
         #else
         var score = 0
         var reasons: [ThreatReason] = []
 
-        let jb = await JailbreakDetector.detect()
-        if jb.filesystem { score += 30; reasons.append(.jailbreakFilesystem) }
-        if jb.dylib { score += 50; reasons.append(.jailbreakDylib) }
-        if jb.fridaPort { score += 60; reasons.append(.fridaPort) }
-        if jb.sandboxBreach { score += 40; reasons.append(.sandboxBreach) }
-        if jb.urlScheme { score += 35; reasons.append(.urlScheme) }
-        if jb.suspiciousProcess { score += 45; reasons.append(.suspiciousProcess) }
-        if jb.shadowTweak { score += 60; reasons.append(.shadowTweak) }
+        // JailbreakDetector.detect() is monolithic — it always runs all 7
+        // of its internal checks in one pass. We run it once if ANY
+        // jailbreak sub-signal is selected, then keep only the selected
+        // sub-results.
+        if !checks.isDisjoint(with: .jailbreak) {
+            let jb = await JailbreakDetector.detect()
+            if checks.contains(.jailbreakFilesystem), jb.filesystem {
+                score += 30; reasons.append(.jailbreakFilesystem)
+            }
+            if checks.contains(.jailbreakDylib), jb.dylib {
+                score += 50; reasons.append(.jailbreakDylib)
+            }
+            if checks.contains(.fridaPort), jb.fridaPort {
+                score += 60; reasons.append(.fridaPort)
+            }
+            if checks.contains(.sandboxBreach), jb.sandboxBreach {
+                score += 40; reasons.append(.sandboxBreach)
+            }
+            if checks.contains(.urlScheme), jb.urlScheme {
+                score += 35; reasons.append(.urlScheme)
+            }
+            if checks.contains(.suspiciousProcess), jb.suspiciousProcess {
+                score += 45; reasons.append(.suspiciousProcess)
+            }
+            if checks.contains(.shadowTweak), jb.shadowTweak {
+                score += 60; reasons.append(.shadowTweak)
+            }
+        }
 
-        if DebuggerDetector.isDebuggerAttached() { score += 50; reasons.append(.debuggerAttached) }
-        if DebuggerDetector.isBeingTraced() { score += 40; reasons.append(.processTraced) }
+        if checks.contains(.debuggerAttached), DebuggerDetector.isDebuggerAttached() {
+            score += 50; reasons.append(.debuggerAttached)
+        }
+        if checks.contains(.processTraced), DebuggerDetector.isBeingTraced() {
+            score += 40; reasons.append(.processTraced)
+        }
+        if checks.contains(.codeSignatureInvalid), !IntegrityValidator.validateCodeSignature() {
+            score += 60; reasons.append(.codeSignatureInvalid)
+        }
 
-        if !IntegrityValidator.validateCodeSignature() { score += 60; reasons.append(.codeSignatureInvalid) }
+        guard checks == .all else {
+            // Partial run: report raw facts only, decline to editorialize
+            // a severity. currentThreatLevel is intentionally left
+            // untouched here rather than reset — it only ever reflects the
+            // most recent *full* assessment.
+            return ThreatEvent(level: nil, reasons: reasons)
+        }
 
         // Thresholds require multiple independent signals before Critical —
         // no single check (e.g. Shadow alone) can trigger full lockdown.
@@ -53,7 +99,18 @@ actor SecurityOrchestrator {
 
     // MARK: - Continuous monitoring with jitter
 
-    func startMonitoring(onThreat: @escaping @Sendable (ThreatEvent) -> Void) {
+    /// Starts periodic background re-checks (randomised interval 30-120s)
+    /// using the selected `checks`.
+    ///
+    /// - When `checks == .all`: `onThreat` fires exactly as before, only
+    ///   when the aggregate `level >= .medium`.
+    /// - When `checks` is a partial subset: `level` is always `nil`, so
+    ///   `onThreat` instead fires whenever `reasons` is non-empty, i.e.
+    ///   whenever any selected signal fired positive on that poll.
+    func startMonitoring(
+        checks: SafetyNetChecks = .all,
+        onThreat: @escaping @Sendable (ThreatEvent) -> Void
+    ) {
         #if DEBUG
         return
         #else
@@ -65,8 +122,16 @@ actor SecurityOrchestrator {
                 let seconds = Double.random(in: 30...120)
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 guard !Task.isCancelled, let self else { return }
-                let event = await self.runChecks()
-                if event.level >= .medium {
+                let event = await self.runChecks(checks: checks)
+
+                let shouldFire: Bool
+                if let level = event.level {
+                    shouldFire = level >= .medium
+                } else {
+                    shouldFire = !event.reasons.isEmpty
+                }
+
+                if shouldFire {
                     onThreat(event)
                 }
             }
