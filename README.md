@@ -110,18 +110,35 @@ matters.
 
 ### Step 4 — (Optional) Start continuous background monitoring
 
+`startMonitoring` takes a plain closure callback — not a `NotificationCenter`
+notification — that you register once and that fires on every re-check where
+the threat level is `.medium` or above:
+
 ```swift
+// e.g. call this after login, once the user has an active session
 SafetyNet.shared.startMonitoring { event in
-    // Called on a background queue whenever level >= .medium.
-    // Hop to main thread before touching UI.
+    // Called on a background queue on a randomised interval (30-120s),
+    // only when level >= .medium. Hop to main thread before touching UI.
     DispatchQueue.main.async {
-        handleThreatEvent(event)
+        switch event.level {
+        case .none:
+            break // won't actually be called for .none
+        case .medium:
+            break // log only — do not change UI
+        case .high:
+            disableSensitiveFeatures()
+        case .critical:
+            forceLogoutAndClearSession()
+        }
     }
 }
+
+// e.g. call this on logout, or when the session ends
+SafetyNet.shared.stopMonitoring()
 ```
 
-Call `SafetyNet.shared.stopMonitoring()` when appropriate (e.g. app
-termination, user logout) to cancel the background timer.
+`stopMonitoring()` cancels the background timer — always pair it with
+`startMonitoring` so it doesn't outlive its use case (e.g. after logout).
 
 ### Step 5 — (Optional) Use the Secure Keychain API
 
