@@ -35,11 +35,20 @@ reacting behind your back.
 
 ## Installation
 
-Add SafetyNet via Swift Package Manager:
+### Swift Package Manager
 
 1. In Xcode: **File → Add Package Dependencies…**
 2. Enter this repository's URL (or **Add Local…** for a local checkout).
 3. Select your app target and click **Add Package**.
+
+### CocoaPods
+
+```ruby
+pod 'SafetyNet'
+```
+
+Requires `use_frameworks!` in your `Podfile` (Swift pod). The Objective-C
+bridge (`SafetyNetObjC`) is pulled in automatically as a dependency.
 
 ## Usage
 
