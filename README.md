@@ -37,9 +37,24 @@ reacting behind your back.
 
 ### Swift Package Manager
 
+**Add via the repository URL:**
+
 1. In Xcode: **File → Add Package Dependencies…**
-2. Enter this repository's URL (or **Add Local…** for a local checkout).
-3. Select your app target and click **Add Package**.
+2. Enter this repository's URL: `https://github.com/DipakPanchasara/SafetyNet.git`
+3. Choose a version rule (e.g. "Up to Next Major") and click **Add Package**.
+4. Select your app target under **Add to Target**, then click **Add Package**.
+
+**Add as a local checkout:**
+
+1. Clone the repo locally:
+   ```bash
+   git clone https://github.com/DipakPanchasara/SafetyNet.git
+   ```
+2. In Xcode: **File → Add Package Dependencies…**
+3. Click **Add Local…** in the bottom-left of the dialog.
+4. Navigate to and select the cloned `SafetyNet` folder (the one containing
+   `Package.swift`), then click **Add Package**.
+5. Select your app target under **Add to Target**, then click **Add Package**.
 
 ### CocoaPods
 
