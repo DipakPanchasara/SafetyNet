@@ -210,19 +210,15 @@ above).
 
 ## Architecture
 
-SafetyNet is a from-scratch Swift port of a legacy Cordova plugin
-(`cordova-plugin-security`), and the single most important behavioral
-difference from that legacy plugin drives most of the design:
-
 **SafetyNet never auto-reacts.** It only computes and returns a `ThreatEvent`
-(`level` + `reasons`); it never disables UI, force-logs-out, posts
-`NotificationCenter` notifications, or kills the process on its own. The
-legacy Cordova plugin did auto-react, and that caused a production incident
-— a consuming app's login screen silently hung because a HIGH-threat
-notification triggered its own UI to disable itself in a way that was very
-difficult to diagnose. When porting further legacy behavior or adding new
-checks, preserve this "report only" contract; do not reintroduce automatic
-side effects.
+(`level` + `reasons`) — it never disables UI, force-logs-out, posts
+`NotificationCenter` notifications, or kills the process on its own. This is
+a deliberate constraint: an earlier design that auto-reacted on HIGH/CRITICAL
+threat caused a production incident where a consuming app's login screen
+silently hung, because the auto-posted notification triggered the host app
+to disable its own UI in a way that was very difficult to diagnose. When
+adding new checks, preserve this "report only" contract; do not reintroduce
+automatic side effects.
 
 ### Call chain
 
@@ -260,11 +256,11 @@ raw ARM64 `svc #0x80` syscall is wrapped in `#if !DEBUG` at the C level so
 the *function itself* doesn't exist in Debug builds, not just a no-op body —
 see the comment there for why a no-op body isn't safe enough.
 
-### Signals intentionally not ported from the legacy Cordova plugin
+### Signals intentionally excluded from scoring
 
-Two legacy checks were dropped during the port because they caused false
-positives in production on clean devices, and are documented in code
-comments rather than silently omitted:
+Two checks are deliberately excluded from the scored pipeline because they
+caused false positives in production on clean devices, and are documented in
+code comments rather than silently omitted:
 
 - **Frida memory-scan** (`_check_frida_memory`) — collided with legitimate
   SDK byte sequences (e.g. AirshipKit). Frida is still covered by the
