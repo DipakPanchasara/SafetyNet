@@ -50,44 +50,129 @@ pod 'SafetyNet'
 Requires `use_frameworks!` in your `Podfile` (Swift pod). The Objective-C
 bridge (`SafetyNetObjC`) is pulled in automatically as a dependency.
 
-## Usage
+## Integration guide
+
+### Step 1 — Add the package
+
+Use SPM or CocoaPods as shown in [Installation](#installation) above.
+
+> If your app is Cordova-based, add the package to the native iOS platform
+> project at `platforms/ios/<AppName>.xcodeproj`, not the Cordova JS layer.
+
+### Step 2 — Import SafetyNet where needed
 
 ```swift
 import SafetyNet
+```
 
-// One-time check, e.g. in application(_:didFinishLaunchingWithOptions:)
+### Step 3 — Run a one-time check at app launch
+
+Call this from `application(_:didFinishLaunchingWithOptions:)` in your
+`AppDelegate`, or from your `SceneDelegate`/App struct's `init`/`onAppear`:
+
+```swift
 Task {
     let event = await SafetyNet.shared.check()
     switch event.level {
     case .none:
         break // clean device — proceed normally
     case .medium:
-        break // log only — do not change UI
+        // log only — do not change UI (avoids tipping off an attacker)
+        break
     case .high:
+        // your app decides: e.g. disable sensitive features
         disableSensitiveFeatures()
     case .critical:
+        // your app decides: e.g. force logout, wipe local session
         forceLogoutAndClearSession()
     }
 }
-
-// Optional: continuous background monitoring
-SafetyNet.shared.startMonitoring { event in
-    DispatchQueue.main.async { handleThreatEvent(event) }
-}
-SafetyNet.shared.stopMonitoring() // e.g. on logout
-
-// Optional: secure Keychain storage
-try SafetyNet.shared.store(secret: sessionToken, forKey: "auth_token")
-let token = try SafetyNet.shared.retrieve(forKey: "auth_token")
-SafetyNet.shared.delete(forKey: "auth_token")
-SafetyNet.shared.wipeKeychain()
 ```
 
 **Your app owns the response.** SafetyNet will never disable features or kill
-the process on its own.
+the process on its own — see [Architecture](#architecture) for why this
+matters.
 
-For the full step-by-step integration guide, functional/non-functional
-requirements, and design rationale, see [doc/INTEGRATION.md](doc/INTEGRATION.md).
+### Step 4 — (Optional) Start continuous background monitoring
+
+```swift
+SafetyNet.shared.startMonitoring { event in
+    // Called on a background queue whenever level >= .medium.
+    // Hop to main thread before touching UI.
+    DispatchQueue.main.async {
+        handleThreatEvent(event)
+    }
+}
+```
+
+Call `SafetyNet.shared.stopMonitoring()` when appropriate (e.g. app
+termination, user logout) to cancel the background timer.
+
+### Step 5 — (Optional) Use the Secure Keychain API
+
+```swift
+// Store
+try SafetyNet.shared.store(secret: sessionToken, forKey: "auth_token")
+
+// Retrieve
+let token = try SafetyNet.shared.retrieve(forKey: "auth_token")
+
+// Delete
+SafetyNet.shared.delete(forKey: "auth_token")
+
+// Wipe everything SafetyNet has stored (does not touch other Keychain items)
+SafetyNet.shared.wipeKeychain()
+```
+
+### Step 6 — Verify Debug builds are unaffected
+
+Build and run your app in **Debug** configuration with Xcode attached.
+Confirm:
+- The app launches normally with the debugger attached (no crash, no
+  `PT_DENY_ATTACH` block).
+- `SafetyNet.shared.check()` returns `.none` immediately.
+- Breakpoints in your own app code still work.
+
+This is expected — every detector short-circuits to a safe value under
+`#if DEBUG` (see [Architecture](#architecture) below).
+
+### Step 7 — Verify Release builds detect real threats
+
+Archive a **Release** build and install it via TestFlight or ad-hoc, then
+test on:
+- A clean, non-jailbroken device → `check()` should return `.none`.
+- (If available) a jailbroken test device → `check()` should return
+  `.medium`, `.high`, or `.critical` depending on how many signals fire.
+
+### Requirements this integration relies on
+
+| ID | Requirement |
+|---|---|
+| FR-1 | Call `SafetyNet.shared.check()` or `startMonitoring` before allowing access to sensitive features (login, payments, transfers). |
+| FR-2 | Implement your own response to `ThreatLevel.high` / `.critical` — SafetyNet does not act automatically. |
+| FR-3 | Don't call SafetyNet APIs from a `@MainActor`-isolated context expecting synchronous results — `check()` is `async`. |
+| FR-4 | Keychain keys used via `store(secret:forKey:)` are scoped to SafetyNet's internal service identifier and cannot collide with your app's own Keychain usage. |
+| FR-5 | Pair `startMonitoring` with `stopMonitoring` to avoid an orphaned background timer outliving its use case (e.g. after logout). |
+
+### Known environment constraint — Keychain in test targets
+
+Any consuming app's **unit test target** that calls SafetyNet's Keychain APIs
+must have a valid Development Team assigned under **Signing & Capabilities**.
+Without one, `SecItemAdd`/`SecItemCopyMatching` fail with
+`errSecMissingEntitlement (-34018)` because iOS scopes all Keychain items to
+an access group derived from the code-signing Team ID. This is **not** an
+issue in a normal signed app target (Debug or Release), only in bare test
+bundles without signing configured.
+
+### Rollout checklist
+
+- [ ] Package added via SPM or CocoaPods
+- [ ] `SafetyNet.shared.check()` called at launch, response wired to app-specific logic
+- [ ] (If used) `startMonitoring`/`stopMonitoring` paired correctly around session lifecycle
+- [ ] (If used) Keychain APIs adopted for sensitive local storage
+- [ ] Debug build verified: Xcode attaches normally, breakpoints work, `check()` returns `.none`
+- [ ] Release build verified: clean device returns `.none`; (if available) jailbroken device returns non-`.none`
+- [ ] Development Team assigned to any test target exercising Keychain APIs
 
 ## Development
 
@@ -104,8 +189,9 @@ swift test --filter SafetyNetTests/testCheckReturnsNoneLevelInDebugOrSimulator
 `swift test` runs as an unsigned bare test bundle. Keychain-backed tests
 (`SecureKeychainTests`) will fail with `errSecMissingEntitlement (-34018)`
 unless the test target/toolchain has a Development Team / signing configured
-— this is expected in a bare CLI environment (see §6 of
-[doc/INTEGRATION.md](doc/INTEGRATION.md)).
+— this is expected in a bare CLI environment (see [Known environment
+constraint — Keychain in test targets](#known-environment-constraint--keychain-in-test-targets)
+above).
 
 ## Architecture
 
@@ -117,10 +203,11 @@ difference from that legacy plugin drives most of the design:
 (`level` + `reasons`); it never disables UI, force-logs-out, posts
 `NotificationCenter` notifications, or kills the process on its own. The
 legacy Cordova plugin did auto-react, and that caused a production incident
-(silently hung login screen) that was hard to root-cause — see
-[doc/INTEGRATION.md](doc/INTEGRATION.md) §7 for the full story. When porting
-further legacy behavior or adding new checks, preserve this "report only"
-contract; do not reintroduce automatic side effects.
+— a consuming app's login screen silently hung because a HIGH-threat
+notification triggered its own UI to disable itself in a way that was very
+difficult to diagnose. When porting further legacy behavior or adding new
+checks, preserve this "report only" contract; do not reintroduce automatic
+side effects.
 
 ### Call chain
 
