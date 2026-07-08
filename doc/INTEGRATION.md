@@ -34,8 +34,8 @@ Frameworks used internally (all system frameworks, no third-party deps):
 
 1. Open your app's `.xcodeproj` / `.xcworkspace` in Xcode.
 2. Go to **File → Add Package Dependencies…**
-3. Click **Add Local…** and select the folder:
-   `/Users/dipakpanchasara/Project/Ruthwik/Bank App/jailbrack/SafetyNet`
+3. Enter this repository's URL, or click **Add Local…** and select your local
+   checkout of the `SafetyNet` package folder.
 4. Select your app target under **Add to Target**, then click **Add Package**.
 
 > If your app is Cordova-based, add the package to the native iOS platform
@@ -166,13 +166,12 @@ only in bare test bundles without signing configured.
 
 ## 7. Design Rationale — Why SafetyNet Never Auto-Reacts
 
-The legacy `cordova-plugin-security` (see
-[`SecurityPlugin/`](../SecurityPlugin)) auto-posted a
+The legacy `cordova-plugin-security` auto-posted a
 `SecurityThreatHighNotification` on HIGH threat and auto-terminated the
-process on CRITICAL threat. In production, this caused the SVB Go banking
-app's login screen to silently hang — the notification triggered the host
-app to disable its own login UI in a way that was very difficult to diagnose,
-and required extensive debugging across the whole `DebuggerDetector.m` /
+process on CRITICAL threat. In production, this caused a consuming app's
+login screen to silently hang — the notification triggered the host app to
+disable its own login UI in a way that was very difficult to diagnose, and
+required extensive debugging across the whole `DebuggerDetector.m` /
 `SecurityOrchestrator.m` call chain to root-cause.
 
 SafetyNet's `check()` and `startMonitoring(onThreat:)` **only report** the
