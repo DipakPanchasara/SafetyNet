@@ -15,11 +15,11 @@ actor SecurityOrchestrator {
     /// Runs the selected `checks` and returns a `ThreatEvent`.
     ///
     /// When `checks == .all` (the default), this reproduces the original
-    /// behavior exactly: every one of the 10 signals runs, scores sum into
+    /// behavior exactly: every scored signal runs, scores sum into
     /// an aggregate `ThreatLevel`, and `event.level` is non-nil.
     ///
     /// When `checks` is a partial subset, `event.level` is always `nil` —
-    /// the medium/high/critical thresholds below assume all 10 signals
+    /// the medium/high/critical thresholds below assume all signals
     /// could contribute, and were deliberately calibrated so no single
     /// check can reach `.critical` alone; a caller-chosen subset could
     /// otherwise reach `.critical` off far fewer independent signals than
@@ -62,6 +62,12 @@ actor SecurityOrchestrator {
             if checks.contains(.shadowTweak), jb.shadowTweak {
                 score += 60; reasons.append(.shadowTweak)
             }
+            if checks.contains(.suspiciousSymlinks), jb.suspiciousSymlinks {
+                score += 35; reasons.append(.suspiciousSymlinks)
+            }
+            if checks.contains(.suspiciousOpenPort), jb.suspiciousOpenPort {
+                score += 40; reasons.append(.suspiciousOpenPort)
+            }
         }
 
         if checks.contains(.debuggerAttached), DebuggerDetector.isDebuggerAttached() {
@@ -70,8 +76,24 @@ actor SecurityOrchestrator {
         if checks.contains(.processTraced), DebuggerDetector.isBeingTraced() {
             score += 40; reasons.append(.processTraced)
         }
+        if checks.contains(.watchpointDetected), DebuggerDetector.hasWatchpoint() {
+            score += 40; reasons.append(.watchpointDetected)
+        }
+        if checks.contains(.pSelectFlagSet), DebuggerDetector.hasPSelectFlag() {
+            // Upstream marks this check "EXPERIMENTAL" —
+            // weighted below the existing minimum (30) accordingly.
+            score += 25; reasons.append(.pSelectFlagSet)
+        }
         if checks.contains(.codeSignatureInvalid), !IntegrityValidator.validateCodeSignature() {
             score += 60; reasons.append(.codeSignatureInvalid)
+        }
+        if checks.contains(.systemProxy), ProxyDetector.checkSystemProxy() {
+            // Legitimate corporate/privacy proxies are common — weak
+            // evidence alone, weighted low.
+            score += 15; reasons.append(.systemProxyDetected)
+        }
+        if checks.contains(.vpnAsProxy), ProxyDetector.checkVPNAsProxy() {
+            score += 15; reasons.append(.vpnDetected)
         }
 
         guard checks == .all else {

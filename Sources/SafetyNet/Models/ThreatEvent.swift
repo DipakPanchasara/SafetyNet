@@ -5,7 +5,7 @@ public struct ThreatEvent: Sendable {
     /// the *full* check set (`SafetyNetChecks.all`) was run — see
     /// `SecurityOrchestrator.runChecks(checks:)`. `nil` for partial runs:
     /// the threshold math (medium 30-59 / high 60-99 / critical 100+) was
-    /// calibrated assuming all 10 signals could contribute, and a
+    /// calibrated assuming all signals could contribute, and a
     /// caller-chosen subset could otherwise reach `.critical` off far fewer
     /// signals than intended. For partial runs, inspect `reasons` directly
     /// and decide severity yourself.

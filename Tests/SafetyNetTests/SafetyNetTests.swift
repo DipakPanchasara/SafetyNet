@@ -68,6 +68,42 @@ final class SafetyNetTests: XCTestCase {
         XCTAssertTrue(event.reasons.isEmpty)
     }
 
+    func testCheckWithNetworkChecksReturnsNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: .network)
+        XCTAssertNil(event.level)
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
+    func testCheckWithNewlyAddedSubSignalsReturnsNilLevel() async {
+        let event = await SafetyNet.shared.check(checks: [
+            .suspiciousSymlinks, .suspiciousOpenPort, .watchpointDetected, .pSelectFlagSet,
+        ])
+        XCTAssertNil(event.level)
+        XCTAssertTrue(event.reasons.isEmpty)
+    }
+
+    // MARK: - Environment info
+
+    func testIsSimulatorIsTrueInTestEnvironment() {
+        // Test binaries always run on the Simulator.
+        XCTAssertTrue(SafetyNet.shared.isSimulator)
+    }
+
+    func testIsInLockdownModeIsRepeatable() {
+        let first = SafetyNet.shared.isInLockdownMode
+        let second = SafetyNet.shared.isInLockdownMode
+        XCTAssertEqual(first, second)
+    }
+
+    // MARK: - Opt-in diagnostics
+
+    func testCheckFileIntegrityFlagsIncorrectBundleID() {
+        let result = SafetyNet.shared.checkFileIntegrity([
+            .bundleID("com.definitely.not.the.real.bundle.id"),
+        ])
+        XCTAssertTrue(result.result)
+    }
+
     // MARK: - Monitoring lifecycle
 
     func testStartMonitoringDoesNotCrash() {

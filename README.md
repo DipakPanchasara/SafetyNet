@@ -12,18 +12,38 @@ reacting behind your back.
 
 ## Features
 
-- **Jailbreak detection** — filesystem checks, injected dylib scanning, Frida
-  port probing, sandbox-write testing, jailbreak URL scheme detection,
-  suspicious process scanning, and Shadow tweak detection.
+- **Jailbreak detection** — filesystem checks (90+ known paths), injected
+  dylib scanning, Frida port probing, sandbox-write testing, jailbreak URL
+  scheme detection, suspicious process scanning, Shadow tweak detection,
+  non-standard symbolic link detection, and additional open-port scanning
+  (SSH/checkra1n).
 - **Anti-debugging** — `ptrace(PT_DENY_ATTACH)` issued via a raw syscall at
-  process launch (no hookable libc symbol), plus runtime debugger/trace
-  detection.
+  process launch (no hookable libc symbol), runtime debugger/trace
+  detection, watchpoint detection, and an experimental `P_SELECT` flag
+  check.
 - **Integrity validation** — live code-signature validation via `csops()`,
-  plus an opt-in `__TEXT` segment memory-patch diagnostic.
+  plus opt-in `__TEXT` segment memory-patch and file-integrity (bundle ID /
+  provisioning profile / Mach-O section SHA256) diagnostics.
+- **Network signals** — system proxy and VPN-as-proxy detection.
+- **Hook detection** — opt-in diagnostics for MSHook (Cydia
+  Substrate/Substitute) trampolines, ARM64 breakpoints, and runtime method
+  swizzling — detection only, SafetyNet never patches your app's memory.
+- **Environment info** — simulator and iOS Lockdown Mode detection
+  (informational, not scored).
 - **Secure Keychain** — a small, scoped wrapper around Keychain storage for
   sensitive local values, isolated from the host app's own Keychain usage.
-- **Debug-safe by design** — every check short-circuits to a safe value in
-  Debug builds, so debugging your own app is never blocked or slowed down.
+- **Selective checks** — run every signal, or just the ones you choose, via
+  `SafetyNetChecks`. See [Selecting which checks run](#selecting-which-checks-run).
+- **Debug-safe by design** — every scored check short-circuits to a safe
+  value in Debug builds, so debugging your own app is never blocked or
+  slowed down.
+
+Several of these signals (symbolic links, open ports, watchpoint, P_SELECT,
+proxy/VPN, MSHook/runtime-hook detection, file integrity) are ports of the
+equivalent checks in a well-known open-source iOS security-detection
+technique, adapted to fit SafetyNet's scoring model and read-only-only
+design — see [Detection technique provenance](#detection-technique-provenance)
+for exactly what was and wasn't carried over, and why.
 
 ## Requirements
 
@@ -31,7 +51,7 @@ reacting behind your back.
 |---|---|
 | iOS deployment target | 14.0+ |
 | Xcode | 14.0+ (Swift 5.9 tools) |
-| Dependencies | None — system frameworks only (`Security`, `MachO`, `Darwin`, `UIKit`) |
+| Dependencies | None — system frameworks only (`Security`, `MachO`, `Darwin`, `UIKit`, `CFNetwork`, `CryptoKit`) |
 
 ## Installation
 
@@ -262,25 +282,28 @@ not reintroduce automatic side effects.
 ```
 SafetyNet (public singleton API, Sources/SafetyNet/SafetyNet.swift)
   -> SecurityOrchestrator (actor, Internal/SecurityOrchestrator.swift)
-       -> JailbreakDetector.detect()       (7 independent signals, scored)
-       -> DebuggerDetector.isDebuggerAttached() / isBeingTraced()
+       -> JailbreakDetector.detect()       (9 independent signals, scored)
+       -> DebuggerDetector.isDebuggerAttached() / isBeingTraced() /
+          hasWatchpoint() / hasPSelectFlag()
        -> IntegrityValidator.validateCodeSignature()
+       -> ProxyDetector.checkSystemProxy() / checkVPNAsProxy()
   -> SecureKeychain (independent — not part of the scoring pipeline)
+  -> HookDetector / FileIntegrityChecker (opt-in diagnostics, not scored)
 ```
 
 ### Selecting which checks run
 
 `check()`/`startMonitoring()` accept a `checks: SafetyNetChecks = .all`
-parameter — an `OptionSet` covering all 10 individually-scored signals, with
-`.jailbreak`/`.debugger`/`.integrity` convenience group unions and `.all`
-(the default) covering every signal.
+parameter — an `OptionSet` covering every individually-scored signal, with
+`.jailbreak`/`.debugger`/`.integrity`/`.network` convenience group unions
+and `.all` (the default) covering everything.
 
 - **`.all` (default)** — reproduces the original behavior exactly: every
   signal runs, and `ThreatEvent.level` is populated via the scored
   thresholds described above.
 - **Any partial selection** (e.g. `.debugger`, `[.fridaPort, .shadowTweak]`,
   or a single signal) — `ThreatEvent.level` is always `nil`. The medium/high/
-  critical thresholds were calibrated assuming all 10 signals could
+  critical thresholds were calibrated assuming all signals could
   contribute, deliberately so no single signal can reach `.critical` alone;
   a caller-chosen subset could otherwise reach `.critical` off far fewer
   independent signals than intended. Rather than silently weaken that
@@ -296,11 +319,11 @@ let full = await SafetyNet.shared.check()
 let partial = await SafetyNet.shared.check(checks: [.fridaPort, .debuggerAttached])
 ```
 
-Note: `JailbreakDetector.detect()` is monolithic — it always runs all 7 of
-its internal jailbreak checks in one pass. Selecting even a single jailbreak
-sub-signal (e.g. just `.fridaPort`) still costs the same as running all 7;
-only the *reported* subset in `reasons` is filtered down to what you asked
-for.
+Note: `JailbreakDetector.detect()` is monolithic — it always runs all of its
+internal jailbreak checks in one pass. Selecting even a single jailbreak
+sub-signal (e.g. just `.fridaPort`) still costs the same as running all of
+them; only the *reported* subset in `reasons` is filtered down to what you
+asked for.
 
 `SecurityOrchestrator` is an `actor` and is the only place scoring happens.
 `runChecks()` sums per-signal scores into a `ThreatLevel` via thresholds
@@ -308,7 +331,66 @@ for.
 so no single check alone can reach `.critical`; multiple independent signals
 must agree. When adding a new detector signal, add its score into this
 function and pick a weight consistent with the existing signals in
-`SecurityOrchestrator.swift`.
+`SecurityOrchestrator.swift`. Current weights:
+
+| Signal | `SafetyNetChecks` member | Weight |
+|---|---|---|
+| Filesystem (jailbreak paths) | `.jailbreakFilesystem` | 30 |
+| Injected dylib | `.jailbreakDylib` | 50 |
+| Frida port open | `.fridaPort` | 60 |
+| Sandbox-write breach | `.sandboxBreach` | 40 |
+| URL scheme | `.urlScheme` | 35 |
+| Suspicious process | `.suspiciousProcess` | 45 |
+| Shadow tweak class | `.shadowTweak` | 60 |
+| Non-standard symbolic links | `.suspiciousSymlinks` | 35 |
+| Suspicious open port (SSH/checkra1n) | `.suspiciousOpenPort` | 40 |
+| Debugger attached | `.debuggerAttached` | 50 |
+| Process traced (bad parent) | `.processTraced` | 40 |
+| Watchpoint detected | `.watchpointDetected` | 40 |
+| `P_SELECT` flag set (experimental upstream) | `.pSelectFlagSet` | 25 |
+| Invalid code signature | `.codeSignatureInvalid` | 60 |
+| System proxy configured | `.systemProxy` | 15 |
+| VPN interface detected | `.vpnAsProxy` | 15 |
+
+### Opt-in diagnostics (not scored)
+
+A few checks need a caller-supplied target (a function address, or a
+class/selector pair) and can't be run blindly as part of `.all`, so they're
+plain methods you call directly instead of `SafetyNetChecks` members:
+
+```swift
+// Breakpoint at a specific function (ARM64 only)
+let breakpointed = SafetyNet.shared.hasBreakpoint(at: someFunctionAddr, functionSize: nil)
+
+// MSHookFunction (Cydia Substrate/Substitute) trampoline detection (ARM64 only)
+let msHooked = SafetyNet.shared.isMSHooked(at: someFunctionAddr)
+
+// Runtime method-swizzling detection
+let hooked = SafetyNet.shared.isRuntimeHooked(
+    dyldAllowList: ["MyTrustedFramework"],
+    detectionClass: SomeClass.self,
+    selector: #selector(SomeClass.someMethod),
+    isClassMethod: false
+)
+
+// File/bundle/provisioning-profile integrity — you supply the expected values
+let result = SafetyNet.shared.checkFileIntegrity([
+    .bundleID("com.yourcompany.yourapp"),
+    .mobileProvision("<expected sha256 hex digest>"),
+    .machO("YourAppBinary", "<expected sha256 hex digest>"),
+])
+if result.result {
+    // result.hitChecks tells you exactly which checks flagged
+}
+
+// Environment info (informational, not a threat signal)
+SafetyNet.shared.isSimulator
+SafetyNet.shared.isInLockdownMode
+```
+
+`hasBreakpoint`/`isMSHooked`/`isRuntimeHooked` detect only — none of them
+patch or modify your app's memory, matching SafetyNet's read-only design
+(see [Detection technique provenance](#detection-technique-provenance)).
 
 ### The `#if DEBUG` short-circuit pattern
 
@@ -342,6 +424,39 @@ code comments rather than silently omitted:
 
 Do not re-add either to the scored pipeline without addressing the original
 false-positive cause.
+
+### Detection technique provenance
+
+Most of the signals added after the initial jailbreak/debugger/integrity set
+are ports of the equivalent checks in a well-known open-source iOS
+jailbreak/anti-tampering detection technique, adapted to fit SafetyNet's
+scoring model. Two things were deliberately **not** ported, both for the
+same reason: they don't just detect, they patch — a fundamentally different
+risk class from every other check in this codebase (all read-only), and one
+this project's NFR-4 (never crash regardless of device state; no unbounded
+memory writes) rules out:
+
+- **`denyFishHook`/`denyMSHook`** (upstream) — hand-parse Mach-O load
+  commands and rewrite live executable memory via `vm_protect` to "un-hook" a
+  symbol or function. SafetyNet ports the *detection* halves
+  (`isMSHooked`/`isRuntimeHooked`) but never the patching. One consequence:
+  upstream's runtime-hook detector defensively hooks-proofs `dladdr` itself
+  before using it; SafetyNet's port skips that pre-step (it's the same kind
+  of live patching), so it's marginally weaker against an attacker who has
+  specifically hooked `dladdr` — see the doc comment on
+  `HookDetector.isRuntimeHooked`.
+- **The literal `fork()`-based sandbox check** (upstream's `JailbreakChecker`)
+  — calls `fork()` inside the running app to see if it succeeds. Apple
+  discourages calling `fork()` from a live Swift/ObjC app since the
+  Objective-C runtime and GCD aren't fork-safe; it can deadlock or crash on
+  some devices. SafetyNet's existing file-write-based `checkSandbox()`
+  already covers the same detection goal without that risk.
+
+Separately, while porting the URL-scheme check, upstream's own commit
+history revealed a real fixed bug worth carrying over: `cydia://` and
+`activator://` were removed from upstream's scheme list after a published
+App Store app was found to register `cydia://`, causing false positives in
+production. SafetyNet's list now matches upstream's current (safer) set.
 
 ### Logging
 

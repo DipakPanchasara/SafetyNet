@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import SafetyNet
 
@@ -28,5 +29,30 @@ final class DebuggerDetectorTests: XCTestCase {
             XCTAssertFalse(DebuggerDetector.isDebuggerAttached())
             XCTAssertFalse(DebuggerDetector.isBeingTraced())
         }
+    }
+
+    func testHasWatchpointReturnsFalseInTestEnvironment() {
+        XCTAssertFalse(DebuggerDetector.hasWatchpoint())
+    }
+
+    func testHasPSelectFlagIsRepeatable() {
+        let first = DebuggerDetector.hasPSelectFlag()
+        let second = DebuggerDetector.hasPSelectFlag()
+        XCTAssertEqual(first, second)
+    }
+
+    func testHasBreakpointReturnsFalseForKnownCleanLibcFunction() {
+        // Opt-in diagnostic, not gated by DEBUG/Simulator (matches
+        // IntegrityValidator.detectMemoryPatch's un-gated pattern). Resolve
+        // a known, always-loaded libc symbol via dlsym (same technique
+        // already used by this file's anti-debug code) so this exercises
+        // the real ARM64 decode path against known-clean code, not a
+        // short-circuit.
+        guard let addr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "strlen") else {
+            XCTFail("dlsym(strlen) unexpectedly returned nil")
+            return
+        }
+        let result = DebuggerDetector.hasBreakpoint(at: UnsafeRawPointer(addr), functionSize: 64)
+        XCTAssertFalse(result)
     }
 }

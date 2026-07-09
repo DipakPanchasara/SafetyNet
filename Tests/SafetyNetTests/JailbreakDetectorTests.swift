@@ -47,6 +47,14 @@ final class JailbreakDetectorTests: XCTestCase {
         result = JailbreakDetector.Result()
         result.shadowTweak = true
         XCTAssertTrue(result.isJailbroken)
+
+        result = JailbreakDetector.Result()
+        result.suspiciousSymlinks = true
+        XCTAssertTrue(result.isJailbroken)
+
+        result = JailbreakDetector.Result()
+        result.suspiciousOpenPort = true
+        XCTAssertTrue(result.isJailbroken)
     }
 
     func testDetectIsRepeatable() async {
